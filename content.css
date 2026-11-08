@@ -1,0 +1,18 @@
+#uipath-xaml-diff-btn {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483000;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #fa4616;
+  color: #fff;
+  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+#uipath-xaml-diff-btn:hover {
+  background: #d93a0f;
+}

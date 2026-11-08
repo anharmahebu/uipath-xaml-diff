@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "UiPath XAML Diff for GitHub",
+  "version": "1.0.0",
+  "description": "Review UiPath .xaml changes in GitHub pull requests as a readable activity outline instead of raw XML.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://api.github.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "UiPath XAML Diff"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Node (lib/xaml-outline.js can be used from Node with @xmldom/xmldom)
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Chrome extension build artifacts
+*.crx
+*.pem
+*.zip
+dist/
+
+# Local secrets / env
+.env
+.env.*
+
+# Sample workflows used for local testing
+samples/
+*.local.xaml
+
+# Claude Code local settings
+.claude/

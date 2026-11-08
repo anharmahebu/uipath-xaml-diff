@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>UiPath XAML Diff</title>
+  <link rel="stylesheet" href="viewer.css">
+  <link rel="stylesheet" href="visual.css">
+  <link rel="stylesheet" href="studio.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">UiPath XAML Diff</div>
+    <div class="controls">
+      <span class="seg">
+        <label><input type="radio" name="view" value="studio" checked> Studio</label>
+        <label><input type="radio" name="view" value="sidebyside"> Side-by-side</label>
+        <label><input type="radio" name="view" value="text"> Text</label>
+      </span>
+      <label><input type="radio" name="mode" value="changes" checked> Changes only</label>
+      <label><input type="radio" name="mode" value="full"> Full outline</label>
+      <a href="options.html" target="_blank" class="link">Options</a>
+    </div>
+  </header>
+
+  <main>
+    <section id="summary"></section>
+
+    <section id="local" hidden>
+      <h2>Compare 2 local XAML files</h2>
+      <p class="muted">Pick the old (before) and new (after) version. Pick only one file to see its outline.</p>
+      <div class="pickers">
+        <label>Before <input type="file" id="fileOld" accept=".xaml,.xml"></label>
+        <label>After <input type="file" id="fileNew" accept=".xaml,.xml"></label>
+        <button type="button" id="btnCompare">Compare</button>
+      </div>
+    </section>
+
+    <div id="status" class="status" hidden></div>
+    <section id="files"></section>
+  </main>
+
+  <script src="lib/xaml-outline.js"></script>
+  <script src="lib/diff.js"></script>
+  <script src="lib/xaml-tree.js"></script>
+  <script src="visual.js"></script>
+  <script src="studio.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>
