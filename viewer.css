@@ -103,6 +103,17 @@ main { padding: 16px 24px 48px; margin: 0 auto; }
 
 .file.collapsed .file-body { display: none; }
 
+.progress { font-size: 13px; color: var(--muted); }
+.progress.done { color: #1a7f37; font-weight: 600; }
+.review { font-size: 13px; cursor: pointer; white-space: nowrap; }
+.file.reviewed .file-head .name { color: var(--muted); }
+
+/* one file in browser full screen (Fullscreen API), shown even when collapsed */
+.file:fullscreen { display: flex; flex-direction: column; margin: 0; border: 0; border-radius: 0; background: var(--bg); }
+.file:fullscreen .file-head { cursor: default; }
+.file:fullscreen .file-body { display: block; flex: 1; min-height: 0; overflow: auto; }
+.file:fullscreen .sv { height: 100%; min-height: 0; }
+
 table.diff {
   width: 100%;
   border-collapse: collapse;

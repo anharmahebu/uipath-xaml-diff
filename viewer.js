@@ -2,7 +2,7 @@
   'use strict';
 
   var API = 'https://api.github.com';
-  var state = { files: [], mode: 'changes', view: 'studio' };
+  var state = { files: [], mode: 'changes', view: 'studio', open: {}, reviewed: {}, reviewKey: null };
   var VIEWS = { studio: 1, sidebyside: 1, text: 1 };
 
   // ---------- helpers ----------
@@ -39,6 +39,26 @@
     return new Promise(function (resolve) {
       chrome.storage.local.get({ githubToken: '' }, function (v) { resolve(v.githubToken || ''); });
     });
+  }
+
+  // reviewed files: { [file name]: blob sha (true in local mode) }; a new sha means "changed since review"
+  function loadReviewed(key) {
+    return new Promise(function (resolve) {
+      var q = {};
+      q[key] = {};
+      chrome.storage.local.get(q, function (v) { resolve(v[key] || {}); });
+    });
+  }
+
+  function saveReviewed() {
+    if (!state.reviewKey) return;
+    var q = {};
+    q[state.reviewKey] = state.reviewed;
+    chrome.storage.local.set(q);
+  }
+
+  function isReviewed(f) {
+    return state.reviewed[f.name] === (f.sha || true);
   }
 
   // ---------- GitHub API ----------
@@ -90,12 +110,14 @@
     var token;
     var base = '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/pulls/' + encodeURIComponent(pr);
     setStatus('Loading pull request #' + pr + ' ...');
+    state.reviewKey = 'reviewed:' + owner + '/' + repo + '#' + pr;
     return getToken().then(function (t) {
       token = t;
-      return Promise.all([apiFetch(token, base), fetchAllFiles(token, base)]);
+      return Promise.all([apiFetch(token, base), fetchAllFiles(token, base), loadReviewed(state.reviewKey)]);
     }).then(function (res) {
       var info = res[0];
       var files = res[1];
+      state.reviewed = res[2];
       renderSummary(info, files, owner, repo);
 
       var xaml = files.filter(function (f) { return isXaml(f.filename) || (f.previous_filename && isXaml(f.previous_filename)); });
@@ -117,9 +139,9 @@
           : headRepo ? fetchContent(token, headRepo, f.filename, info.head.sha)
           : Promise.reject(new Error('Head repository is no longer available (deleted fork).'));
         return Promise.all([pOld, pNew]).then(function (texts) {
-          return { name: f.filename, oldName: f.previous_filename || null, status: f.status, oldText: texts[0], newText: texts[1], error: null };
+          return { name: f.filename, oldName: f.previous_filename || null, status: f.status, sha: f.sha, oldText: texts[0], newText: texts[1], error: null };
         }, function (err) {
-          return { name: f.filename, oldName: f.previous_filename || null, status: f.status, oldText: null, newText: null, error: err.message };
+          return { name: f.filename, oldName: f.previous_filename || null, status: f.status, sha: f.sha, oldText: null, newText: null, error: err.message };
         });
       })).then(function (loaded) {
         state.files = loaded;
@@ -241,7 +263,7 @@
   }
 
   function renderFile(f) {
-    var box = el('div', 'file');
+    var box = el('div', 'file' + (state.open[f.name] ? '' : ' collapsed'));
     var head = el('div', 'file-head');
     box.appendChild(head);
     head.appendChild(el('span', 'name', f.oldName && f.oldName !== f.name ? f.oldName + ' → ' + f.name : f.name));
@@ -249,7 +271,10 @@
 
     var body = el('div', 'file-body');
     box.appendChild(body);
-    head.addEventListener('click', function () { box.classList.toggle('collapsed'); });
+    head.addEventListener('click', function () {
+      if (document.fullscreenElement === box) return;
+      state.open[f.name] = !box.classList.toggle('collapsed');
+    });
 
     if (f.error) {
       body.appendChild(el('div', 'parse-error', f.error));
@@ -303,10 +328,60 @@
     return box;
   }
 
+  function reviewToggle(f, box) {
+    var label = el('label', 'review');
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = isReviewed(f);
+    box.classList.toggle('reviewed', cb.checked);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' Reviewed'));
+    label.addEventListener('click', function (e) { e.stopPropagation(); });
+    cb.addEventListener('change', function () {
+      if (cb.checked) {
+        state.reviewed[f.name] = f.sha || true;
+        state.open[f.name] = false;
+        box.classList.add('collapsed');
+      } else {
+        delete state.reviewed[f.name];
+      }
+      box.classList.toggle('reviewed', cb.checked);
+      saveReviewed();
+      renderProgress();
+    });
+    return label;
+  }
+
+  function fullscreenButton(box) {
+    var b = el('button', 'fs-btn', '⛶ Full screen');
+    b.type = 'button';
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (document.fullscreenElement === box) document.exitFullscreen();
+      else box.requestFullscreen();
+    });
+    return b;
+  }
+
+  function renderProgress() {
+    var p = document.getElementById('progress');
+    var n = state.files.filter(isReviewed).length;
+    p.hidden = !state.files.length;
+    p.textContent = 'Reviewed ' + n + ' / ' + state.files.length + ' files';
+    p.classList.toggle('done', n === state.files.length);
+  }
+
   function renderFiles() {
     var root = document.getElementById('files');
     root.textContent = '';
-    state.files.forEach(function (f) { root.appendChild(renderFile(f)); });
+    state.files.forEach(function (f) {
+      var box = renderFile(f);
+      var head = box.firstChild;
+      head.appendChild(reviewToggle(f, box));
+      head.appendChild(fullscreenButton(box));
+      root.appendChild(box);
+    });
+    renderProgress();
   }
 
   // ---------- local compare ----------
@@ -328,13 +403,20 @@
         setStatus(null);
         var status = !a ? 'added' : !b ? 'removed' : 'modified';
         var name = a && b && a.name !== b.name ? a.name + ' → ' + b.name : (b || a).name;
-        state.files = [{ name: name, oldName: null, status: status, oldText: a ? a.text : null, newText: b ? b.text : null, error: null }];
+        state.reviewed = {};
+        state.files = [{ name: name, oldName: null, status: status, sha: null, oldText: a ? a.text : null, newText: b ? b.text : null, error: null }];
         renderFiles();
       });
     });
   }
 
   // ---------- init ----------
+
+  document.addEventListener('fullscreenchange', function () {
+    Array.prototype.forEach.call(document.querySelectorAll('.fs-btn'), function (b) {
+      b.textContent = document.fullscreenElement === b.closest('.file') ? '✕ Exit full screen' : '⛶ Full screen';
+    });
+  });
 
   Array.prototype.forEach.call(document.querySelectorAll('input[name="mode"]'), function (r) {
     r.addEventListener('change', function () {
@@ -348,6 +430,15 @@
       state.view = r.value;
       chrome.storage.local.set({ viewMode: r.value });
       if (state.files.length) renderFiles();
+    });
+  });
+
+  // default page zoom 75%, applied once; afterwards Chrome remembers the user's own zoom for this origin
+  chrome.storage.local.get({ zoomInit: false }, function (v) {
+    if (v.zoomInit) return;
+    chrome.tabs.getCurrent(function (tab) {
+      if (!tab) return;
+      chrome.tabs.setZoom(tab.id, 0.75, function () { chrome.storage.local.set({ zoomInit: true }); });
     });
   });
 
