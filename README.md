@@ -121,7 +121,7 @@ GitHub PR page ── content.js (button) ──┐
 Toolbar icon ───────────────────────────┴─> background.js ─> opens viewer.html?owner=&repo=&pr=
                                                               (no params = local compare mode)
 viewer.js
-  ├─ loadPullRequest(): GitHub REST API -> state.files = [{ name, oldName, status, oldText, newText, error }]
+  ├─ loadPullRequest(): GitHub REST API -> state.files = [{ name, oldName, status, sha, oldText, newText, error }]
   │    or setupLocal(): two <input type=file> -> same shape
   └─ renderFiles() -> renderFile(f), by state.view:
        'text'       -> XamlOutline.xamlToOutline -> XamlDiff.diffLines / buildHunks -> <table>
@@ -131,7 +131,7 @@ viewer.js
      and return { element, counts: { added, removed, modified, moved } | null }
 ```
 
-`status` is GitHub's file status (`added`, `removed`, `modified`, `renamed`, ...). `oldText` is `null` for added files, `newText` is `null` for removed files. `state.mode` is `'changes'` or `'full'`.
+`status` is GitHub's file status (`added`, `removed`, `modified`, `renamed`, ...). `sha` is the new blob sha from GitHub (`null` in local mode). `oldText` is `null` for added files, `newText` is `null` for removed files. `state.mode` is `'changes'` or `'full'`.
 
 ### Files and what to change where
 
@@ -141,8 +141,8 @@ viewer.js
 | `background.js` | Service worker. `openViewer(params)`; handles `{type:'openViewer'}` messages and toolbar clicks | change how the viewer is opened |
 | `content.js/.css` | Floating "XAML Diff" button on `github.com/<o>/<r>/pull/<n>`. URL-only, re-checked every 1 s and on `turbo:load` / `popstate` | change the button |
 | `options.html/.js` | Save / test / clear the GitHub token | change token handling |
-| `viewer.html` | Page shell: topbar (view + mode radios), `#summary`, `#local`, `#status`, `#files`, script tags | add top-level controls or scripts |
-| `viewer.js` | GitHub API (`apiFetch` with error hints, `fetchAllFiles` up to 30×100 files, `fetchContent` raw), PR summary, Text-mode table, local compare, view/mode switching | loading, API errors, Text-mode rendering |
+| `viewer.html` | Page shell: topbar (view + mode radios, `#progress`), `#summary`, `#local`, `#status`, `#files`, script tags | add top-level controls or scripts |
+| `viewer.js` | GitHub API (`apiFetch` with error hints, `fetchAllFiles` up to 30×100 files, `fetchContent` raw), PR summary, Text-mode table, local compare, view/mode switching. File cards start collapsed (`state.open`); `renderFiles` adds the *Reviewed* checkbox (`state.reviewed`, checking collapses the card) and the *Full screen* button (Fullscreen API on the `.file` box) to each header, then `renderProgress` | loading, API errors, Text-mode rendering, file card header |
 | `lib/xaml-outline.js` | XAML → `[{ depth, text }]` lines. Owns **noise filtering** (`NOISE_ELEMENT_SUFFIXES`, `isNoiseAttr`) and shared helpers exported as `XamlOutline.helpers` | hide more designer noise, change Text-mode output |
 | `lib/diff.js` | `diffLines` (LCS with prefix/suffix trim, `MAX_CELLS` guard, deletions before insertions), `buildHunks(ops, context)`, `inlineSplit`, `stats` | Text-mode diff algorithm |
 | `lib/xaml-tree.js` | `buildTree` (XAML → activity tree), `diffTrees` (per-activity status), `walk` | recognize a new activity/property shape, change matching rules |
@@ -195,6 +195,8 @@ Prop naming conventions the renderers rely on:
 |---|---|---|
 | `githubToken` | `chrome.storage.local` | `options.js`, `viewer.js` |
 | `viewMode` (`studio` / `sidebyside` / `text`) | `chrome.storage.local` | `viewer.js` |
+| `zoomInit` (`true` once the viewer set the page zoom to 75%; later zoom changes are remembered by Chrome per origin) | `chrome.storage.local` | `viewer.js` |
+| `reviewed:<owner>/<repo>#<pr>` → `{ [file name]: sha }`. A file counts as reviewed only while its sha matches, so new commits reset it | `chrome.storage.local` | `viewer.js` |
 | `xd.outlineOpen`, `xd.propsOpen` (`'1'` / `'0'`) | `localStorage` of the extension origin | `studio.js` |
 
 ### Testing
