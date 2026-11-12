@@ -100,3 +100,115 @@ visual.js/.css       Side-by-side renderer + Properties panel
 - Icons and styling are custom-made (not UiPath assets), so the look is similar to Studio but not identical. Everything is read-only (the Open Workflow button is disabled).
 - In Text mode, a moved activity appears as a deletion plus an addition. Studio and Side-by-side modes detect it as MOVED.
 - Up to 3000 files per PR (GitHub API limit).
+
+## Developer guide
+
+This section is for anyone (human or AI agent) changing the code. It should be enough to find the right place without reading every file. Keep it up to date when you change the architecture.
+
+### Tech stack and conventions
+
+- Plain JavaScript in ES5 style (`var`, `function`, no arrow functions, no ES modules). No build step, no dependencies. Chrome Manifest V3.
+- Every file is an IIFE with `'use strict'`. The `lib/` files are UMD: they export via `module.exports` in Node, otherwise they set a global.
+- Globals, in the load order of `viewer.html` (order matters): `XamlOutline` → `XamlDiff` → `XamlTree` → `XamlVisual` → `XamlStudio` → `viewer.js`.
+- DOM is built with a small `el(tag, className, text)` helper (duplicated in each UI file) and `textContent`. **Never use `innerHTML`** with XAML content.
+- Each UI mode has its own CSS file and class prefix: Text = `viewer.css` (`.diff`, `.file`), Side-by-side = `visual.css` (`.vd-*`, `.act*`), Studio = `studio.css` (`.sv-*`, `.sa*`).
+- Line endings are LF (`.gitattributes`).
+
+### Data flow
+
+```
+GitHub PR page ── content.js (button) ──┐
+Toolbar icon ───────────────────────────┴─> background.js ─> opens viewer.html?owner=&repo=&pr=
+                                                              (no params = local compare mode)
+viewer.js
+  ├─ loadPullRequest(): GitHub REST API -> state.files = [{ name, oldName, status, oldText, newText, error }]
+  │    or setupLocal(): two <input type=file> -> same shape
+  └─ renderFiles() -> renderFile(f), by state.view:
+       'text'       -> XamlOutline.xamlToOutline -> XamlDiff.diffLines / buildHunks -> <table>
+       'sidebyside' -> XamlVisual.render(f, mode, parseXml)
+       'studio'     -> XamlStudio.render(f, parseXml, { mode })
+     Both visual renderers: XamlTree.buildTree (old + new) -> XamlTree.diffTrees -> DOM,
+     and return { element, counts: { added, removed, modified, moved } | null }
+```
+
+`status` is GitHub's file status (`added`, `removed`, `modified`, `renamed`, ...). `oldText` is `null` for added files, `newText` is `null` for removed files. `state.mode` is `'changes'` or `'full'`.
+
+### Files and what to change where
+
+| File | Role | Change it when you want to... |
+|---|---|---|
+| `manifest.json` | MV3 manifest. Permissions `storage`, `activeTab`; host `api.github.com` only | add permissions/hosts, bump the version |
+| `background.js` | Service worker. `openViewer(params)`; handles `{type:'openViewer'}` messages and toolbar clicks | change how the viewer is opened |
+| `content.js/.css` | Floating "XAML Diff" button on `github.com/<o>/<r>/pull/<n>`. URL-only, re-checked every 1 s and on `turbo:load` / `popstate` | change the button |
+| `options.html/.js` | Save / test / clear the GitHub token | change token handling |
+| `viewer.html` | Page shell: topbar (view + mode radios), `#summary`, `#local`, `#status`, `#files`, script tags | add top-level controls or scripts |
+| `viewer.js` | GitHub API (`apiFetch` with error hints, `fetchAllFiles` up to 30×100 files, `fetchContent` raw), PR summary, Text-mode table, local compare, view/mode switching | loading, API errors, Text-mode rendering |
+| `lib/xaml-outline.js` | XAML → `[{ depth, text }]` lines. Owns **noise filtering** (`NOISE_ELEMENT_SUFFIXES`, `isNoiseAttr`) and shared helpers exported as `XamlOutline.helpers` | hide more designer noise, change Text-mode output |
+| `lib/diff.js` | `diffLines` (LCS with prefix/suffix trim, `MAX_CELLS` guard, deletions before insertions), `buildHunks(ops, context)`, `inlineSplit`, `stats` | Text-mode diff algorithm |
+| `lib/xaml-tree.js` | `buildTree` (XAML → activity tree), `diffTrees` (per-activity status), `walk` | recognize a new activity/property shape, change matching rules |
+| `visual.js/.css` | Side-by-side renderer: `ICONS`, `summarize(node)` (card text per type), Properties panel, prev/next | Side-by-side look or per-type summary |
+| `studio.js/.css` | Studio renderer (largest file, ~1000 lines). See below | anything in Studio mode |
+
+### Activity tree (`lib/xaml-tree.js`)
+
+Node shape:
+
+```
+{ uid,            // unique per buildTree call; the key used everywhere
+  id,             // WorkflowViewState.IdRef ('__workflow__' for the root), may be null
+  type,           // local name without generic suffix, e.g. 'Assign', 'ForEach'
+  typeArg,        // x:TypeArguments
+  displayName, annotation,
+  props:     [{ name, value }],                   // flat, values are display strings
+  slots:     [{ name, params, children: [Node] }], // '' = default child slot; else 'Then', 'Else', 'Body', ...
+  variables: [{ name, type, def }],
+  parent, slotName,
+  arguments, imports }                            // root 'Workflow' node only
+```
+
+An element is an activity (`isActivityElement`) when it is not a property element (`Foo.Bar`), not in `NON_ACTIVITY` / `ARG_DIR` / `TRANSPARENT`, and has an IdRef, a `DisplayName`, or is listed in `KNOWN_ACTIVITY`.
+
+Prop naming conventions the renderers rely on:
+- `<X.Variables>` → `node.variables` plus a joined `Variables` prop.
+- `<X.Arguments>` (e.g. InvokeWorkflowFile) → props named `in <key>`, `out <key>`, `io <key>`.
+- `AssignOperations` (MultipleAssign) → props named `<to> =`.
+- Workflow arguments (`x:Members`) → props named `Argument <name>` plus `root.arguments[]`.
+
+`diffTrees(oldRoot, newRoot)` (either root may be `null`) returns `{ oldInfo, newInfo, counts }`, with `info[uid] = { status: 'unchanged'|'added'|'removed'|'modified', other, changedProps, subtreeChanged, moved? }`. Matching:
+1. Same IdRef (unique on both sides) and same type.
+2. Top-down, per slot of already matched parents: LCS on `type + displayName`; then if exactly one unmatched node of a type is left on each side, they are paired.
+3. `modified` = DisplayName, annotation, typeArg, any prop, or delegate params differ.
+4. `moved` = different parent or slot, or outside the longest increasing subsequence of sibling order.
+
+### Studio mode internals (`studio.js`)
+
+`XamlStudio.render(file, parse, opts)` builds everything inside one closure:
+- **View model** `VM = { new, old }` from `buildVM(side)`. VM node: `{ key ('n'|'o' + uid), node, ghost, side, status, moved, other, parent, slots, anyChange }`. In the `new` VM, removed old children are inserted as `ghost: true` right after their previous kept sibling.
+- **State** `st`: `side` (Before/After), `canvasKey` (drilled-in container), `expanded`, `expandAll`, `sel = { o, n }` (selection by uid on both sides), `zoom`, filters, `bottomTab`, panel open flags.
+- **Draw functions** re-render their panel from `st`: `drawCrumbs`, `drawCanvas`, `drawOutline`, `drawProps`, `drawBottom`, `drawStatus`. Actions: `select`, `navigate`, `drill`, `step` (prev/next change), `flip(side)`.
+- **Per-type card fields**: `designer(v)`. Add the layout for a new activity type there, using the helpers `labeled`, `fieldBox`, `assignRow`, `argsTable`. Icons and colors: `ICONS` (`[glyph, colorGroup]`). Properties panel grouping: `COMMON_PROPS`, `OUTPUT_PROPS`.
+- `DEPTH_LIMIT = 3`: containers nested deeper than this start collapsed.
+
+### Persisted settings
+
+| Key | Storage | Used by |
+|---|---|---|
+| `githubToken` | `chrome.storage.local` | `options.js`, `viewer.js` |
+| `viewMode` (`studio` / `sidebyside` / `text`) | `chrome.storage.local` | `viewer.js` |
+| `xd.outlineOpen`, `xd.propsOpen` (`'1'` / `'0'`) | `localStorage` of the extension origin | `studio.js` |
+
+### Testing
+
+There are no automated tests and no `package.json`. Verify changes manually:
+1. Reload the extension in `chrome://extensions`.
+2. Click the extension icon on a non-PR page and compare a before/after `.xaml` pair (keep samples in `samples/`, which is git-ignored). Check all three views, with both *Changes only* and *Full outline*.
+3. For API or loading changes, open a real PR that touches `.xaml` files.
+
+The `lib/` files also run in Node with `@xmldom/xmldom`, which is useful for quick checks:
+
+```js
+const { DOMParser } = require('@xmldom/xmldom');
+const XO = require('./lib/xaml-outline.js');
+const parse = s => new DOMParser().parseFromString(s, 'application/xml');
+console.log(XO.outlineToText(XO.xamlToOutline(src, parse).lines));
+```
