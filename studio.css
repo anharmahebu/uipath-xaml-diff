@@ -337,10 +337,8 @@
 }
 .sa-slot + .sa-slot { margin-top: 12px; }
 .sa-slot-label { font-size: 13px; font-weight: 600; margin: 4px 0 6px; color: #333; }
-.sa-branches { display: flex; gap: 14px; align-items: flex-start; }
+.sa-branches { display: flex; flex-direction: column; }
 .sa-branches > .branch {
-  flex: 1 1 0;
-  min-width: 300px;
   border: 1px solid #e1e1e1;
   background: #fbfbfb;
   padding: 6px 10px 12px;
