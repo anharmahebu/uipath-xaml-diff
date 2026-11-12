@@ -173,6 +173,7 @@ Prop naming conventions the renderers rely on:
 - `<X.Arguments>` (e.g. InvokeWorkflowFile) → props named `in <key>`, `out <key>`, `io <key>`.
 - `AssignOperations` (MultipleAssign) → props named `<to> =`.
 - Workflow arguments (`x:Members`) → props named `Argument <name>` plus `root.arguments[]`.
+- A direct `ActivityAction` / `ActivityFunc` child (e.g. the handler inside `<Catch>`) → a `''` slot with its delegate params.
 
 `diffTrees(oldRoot, newRoot)` (either root may be `null`) returns `{ oldInfo, newInfo, counts }`, with `info[uid] = { status: 'unchanged'|'added'|'removed'|'modified', other, changedProps, subtreeChanged, moved? }`. Matching:
 1. Same IdRef (unique on both sides) and same type.
