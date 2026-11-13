@@ -19,6 +19,7 @@ For example, a 222-line XML diff of `Main.xaml` (full of ViewState, HintSize and
 ## Features
 
 - A floating **XAML Diff** button on every GitHub Pull Request page.
+- **Changes from** dropdown under the PR title: show the changes of *All commits* (default) or of a single commit in the PR (that commit vs. its first parent), like GitHub's commit filter.
 - **Studio mode (default):** a layout modeled on the UiPath Studio 21.10 designer.
   - **Center canvas:** a single column with arrows between activities. Each box shows the input fields for its activity type: Assign `To = Value`, Multiple Assign, Log Message (Log Level + Message), Invoke Workflow File (file name + *Import Arguments*), If (Condition + Then/Else side by side), For Each, Read/Write Range, Read/Write Text File, Deserialize JSON, Add Data Row, and more.
   - Shows the **AFTER** version by default. Deleted activities stay in their original position as red ghost boxes (DELETED).
@@ -76,6 +77,8 @@ The token is stored only in this browser (`chrome.storage.local`) and is sent on
 - The viewer fetches data through the GitHub REST API:
   - `GET /repos/{o}/{r}/pulls/{n}`: base and head commits
   - `GET /repos/{o}/{r}/pulls/{n}/files`: list of changed files
+  - `GET /repos/{o}/{r}/pulls/{n}/commits`: commits for the *Changes from* dropdown
+  - `GET /repos/{o}/{r}/commits/{sha}`: changed files of one commit (when a single commit is selected)
   - `GET /repos/{o}/{r}/contents/{path}?ref={sha}`: file contents at the base and head commits
 - XAML is parsed with `DOMParser` → outline (`lib/xaml-outline.js`) → line-based LCS diff (`lib/diff.js`).
 
@@ -100,6 +103,7 @@ visual.js/.css       Side-by-side renderer + Properties panel
 - Icons and styling are custom-made (not UiPath assets), so the look is similar to Studio but not identical. Everything is read-only (the Open Workflow button is disabled).
 - In Text mode, a moved activity appears as a deletion plus an addition. Studio and Side-by-side modes detect it as MOVED.
 - Up to 3000 files per PR (GitHub API limit).
+- The *Changes from* dropdown lists at most 250 commits (GitHub API limit). Only one commit can be selected at a time (no commit ranges).
 
 ## Developer guide
 
@@ -121,7 +125,9 @@ GitHub PR page ── content.js (button) ──┐
 Toolbar icon ───────────────────────────┴─> background.js ─> opens viewer.html?owner=&repo=&pr=
                                                               (no params = local compare mode)
 viewer.js
-  ├─ loadPullRequest(): GitHub REST API -> state.files = [{ name, oldName, status, sha, oldText, newText, error }]
+  ├─ loadPullRequest(): PR info + commits -> state.pr, then loadChanges(sha)
+  │    loadChanges(''): whole PR (base.sha -> head.sha); loadChanges(commitSha): that commit (parents[0] -> commit, via the base repo)
+  │    -> state.files = [{ name, oldName, status, sha, oldText, newText, error }]
   │    or setupLocal(): two <input type=file> -> same shape
   └─ renderFiles() -> renderFile(f), by state.view:
        'text'       -> XamlOutline.xamlToOutline -> XamlDiff.diffLines / buildHunks -> <table>
@@ -142,7 +148,7 @@ viewer.js
 | `content.js/.css` | Floating "XAML Diff" button on `github.com/<o>/<r>/pull/<n>`. URL-only, re-checked every 1 s and on `turbo:load` / `popstate` | change the button |
 | `options.html/.js` | Save / test / clear the GitHub token | change token handling |
 | `viewer.html` | Page shell: topbar (view + mode radios, `#progress`), `#summary`, `#local`, `#status`, `#files`, script tags | add top-level controls or scripts |
-| `viewer.js` | GitHub API (`apiFetch` with error hints, `fetchAllFiles` up to 30×100 files, `fetchContent` raw), PR summary, Text-mode table, local compare, view/mode switching. File cards start collapsed (`state.open`); `renderFiles` adds the *Reviewed* checkbox (`state.reviewed`, checking collapses the card) and the *Full screen* button (Fullscreen API on the `.file` box) to each header, then `renderProgress` | loading, API errors, Text-mode rendering, file card header |
+| `viewer.js` | GitHub API (`apiFetch` with error hints, `fetchList` paged lists, `fetchContent` raw), PR summary with the *Changes from* commit picker (`commitPicker`, `state.commit`; `state.loadSeq` drops stale loads), Text-mode table, local compare, view/mode switching. File cards start collapsed (`state.open`); `renderFiles` adds the *Reviewed* checkbox (`state.reviewed`, checking collapses the card) and the *Full screen* button (Fullscreen API on the `.file` box) to each header, then `renderProgress` | loading, API errors, Text-mode rendering, file card header |
 | `lib/xaml-outline.js` | XAML → `[{ depth, text }]` lines. Owns **noise filtering** (`NOISE_ELEMENT_SUFFIXES`, `isNoiseAttr`) and shared helpers exported as `XamlOutline.helpers` | hide more designer noise, change Text-mode output |
 | `lib/diff.js` | `diffLines` (LCS with prefix/suffix trim, `MAX_CELLS` guard, deletions before insertions), `buildHunks(ops, context)`, `inlineSplit`, `stats` | Text-mode diff algorithm |
 | `lib/xaml-tree.js` | `buildTree` (XAML → activity tree), `diffTrees` (per-activity status), `walk` | recognize a new activity/property shape, change matching rules |

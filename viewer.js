@@ -2,7 +2,8 @@
   'use strict';
 
   var API = 'https://api.github.com';
-  var state = { files: [], mode: 'changes', view: 'studio', open: {}, reviewed: {}, reviewKey: null };
+  var state = { files: [], mode: 'changes', view: 'studio', open: {}, reviewed: {}, reviewKey: null,
+    pr: null, commit: '', loadSeq: 0 };
   var VIEWS = { studio: 1, sidebyside: 1, text: 1 };
 
   // ---------- helpers ----------
@@ -94,12 +95,14 @@
       'application/vnd.github.raw+json');
   }
 
-  function fetchAllFiles(token, base) {
+  // paged list endpoint (100 per page, up to maxPages); pick extracts the array when the response is an object
+  function fetchList(token, path, maxPages, pick) {
     var all = [];
     function page(n) {
-      return apiFetch(token, base + '/files?per_page=100&page=' + n).then(function (list) {
+      return apiFetch(token, path + '?per_page=100&page=' + n).then(function (res) {
+        var list = pick ? pick(res) : res;
         all = all.concat(list);
-        if (list.length === 100 && n < 30) return page(n + 1);
+        if (list.length === 100 && n < maxPages) return page(n + 1);
         return all;
       });
     }
@@ -113,30 +116,52 @@
     state.reviewKey = 'reviewed:' + owner + '/' + repo + '#' + pr;
     return getToken().then(function (t) {
       token = t;
-      return Promise.all([apiFetch(token, base), fetchAllFiles(token, base), loadReviewed(state.reviewKey)]);
+      return Promise.all([apiFetch(token, base), fetchList(token, base + '/commits', 3), loadReviewed(state.reviewKey)]);
     }).then(function (res) {
-      var info = res[0];
-      var files = res[1];
+      state.pr = { token: token, base: base, owner: owner, repo: repo, info: res[0], commits: res[1] };
       state.reviewed = res[2];
-      renderSummary(info, files, owner, repo);
+      return loadChanges('');
+    }).catch(function (err) {
+      setStatus(err.message, true);
+    });
+  }
+
+  // sha '' = the whole PR (base -> head); a commit sha = only that commit's changes (first parent -> commit)
+  function loadChanges(sha) {
+    var p = state.pr, info = p.info, token = p.token;
+    var seq = ++state.loadSeq;
+    var commit = p.commits.filter(function (c) { return c.sha === sha; })[0];
+    var baseRepo = info.base.repo.full_name;
+    var headRepo = info.head.repo ? info.head.repo.full_name : null;
+    // PR commits (also from forks) are reachable through the base repository
+    var r = commit
+      ? { oldRepo: baseRepo, oldRef: commit.parents[0].sha, newRepo: baseRepo, newRef: commit.sha,
+          files: fetchList(token, '/repos/' + baseRepo + '/commits/' + commit.sha, 30, function (c) { return c.files || []; }) }
+      : { oldRepo: baseRepo, oldRef: info.base.sha, newRepo: headRepo, newRef: info.head.sha,
+          files: fetchList(token, p.base + '/files', 30) };
+    state.commit = sha;
+    state.files = [];
+    renderFiles();
+    setStatus(commit ? 'Loading commit ' + sha.slice(0, 7) + ' ...' : 'Loading pull request changes ...');
+
+    return r.files.then(function (files) {
+      if (seq !== state.loadSeq) return;
+      renderSummary(info, files, p.owner, p.repo);
 
       var xaml = files.filter(function (f) { return isXaml(f.filename) || (f.previous_filename && isXaml(f.previous_filename)); });
       if (xaml.length === 0) {
-        setStatus('This pull request has no .xaml changes.');
+        setStatus(commit ? 'This commit has no .xaml changes.' : 'This pull request has no .xaml changes.');
         return;
       }
       setStatus('Loading ' + xaml.length + ' XAML file(s) ...');
-
-      var baseRepo = info.base.repo.full_name;
-      var headRepo = info.head.repo ? info.head.repo.full_name : null;
 
       return Promise.all(xaml.map(function (f) {
         var oldPath = f.previous_filename || f.filename;
         var needOld = f.status !== 'added';
         var needNew = f.status !== 'removed';
-        var pOld = needOld ? fetchContent(token, baseRepo, oldPath, info.base.sha) : Promise.resolve(null);
+        var pOld = needOld ? fetchContent(token, r.oldRepo, oldPath, r.oldRef) : Promise.resolve(null);
         var pNew = !needNew ? Promise.resolve(null)
-          : headRepo ? fetchContent(token, headRepo, f.filename, info.head.sha)
+          : r.newRepo ? fetchContent(token, r.newRepo, f.filename, r.newRef)
           : Promise.reject(new Error('Head repository is no longer available (deleted fork).'));
         return Promise.all([pOld, pNew]).then(function (texts) {
           return { name: f.filename, oldName: f.previous_filename || null, status: f.status, sha: f.sha, oldText: texts[0], newText: texts[1], error: null };
@@ -144,12 +169,13 @@
           return { name: f.filename, oldName: f.previous_filename || null, status: f.status, sha: f.sha, oldText: null, newText: null, error: err.message };
         });
       })).then(function (loaded) {
+        if (seq !== state.loadSeq) return;
         state.files = loaded;
         setStatus(null);
         renderFiles();
       });
     }).catch(function (err) {
-      setStatus(err.message, true);
+      if (seq === state.loadSeq) setStatus(err.message, true);
     });
   }
 
@@ -166,11 +192,27 @@
     s.appendChild(h);
     s.appendChild(el('div', 'meta',
       owner + '/' + repo + '  ·  ' + info.base.ref + ' ← ' + info.head.label + '  ·  ' + files.length + ' file(s) changed'));
+    s.appendChild(commitPicker());
     var other = files.filter(function (f) { return !isXaml(f.filename); }).map(function (f) { return f.filename; });
     if (other.length) {
       s.appendChild(el('div', 'skipped', 'Not shown here (non-XAML, use GitHub diff): ' + other.join(', ')));
     }
     document.title = 'XAML Diff · ' + repo + ' #' + info.number;
+  }
+
+  // "Changes from" dropdown: all commits, or one commit of the PR (GitHub lists them oldest first)
+  function commitPicker() {
+    var label = el('label', 'commit-pick', 'Changes from ');
+    var sel = el('select');
+    sel.appendChild(el('option', null, 'All commits (' + state.pr.commits.length + ')')).value = '';
+    state.pr.commits.forEach(function (c, i) {
+      var msg = c.commit.message.split('\n')[0];
+      sel.appendChild(el('option', null, (i + 1) + '. ' + c.sha.slice(0, 7) + '  ' + msg)).value = c.sha;
+    });
+    sel.value = state.commit;
+    sel.addEventListener('change', function () { loadChanges(sel.value); });
+    label.appendChild(sel);
+    return label;
   }
 
   function classify(text) {
